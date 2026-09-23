@@ -1,0 +1,4 @@
+# Hook scripts are executed by sh. A CRLF shebang line ("#!/bin/sh\r") makes
+# them fail on Linux and macOS, so keep the hooks LF regardless of the
+# committer's core.autocrlf setting.
+.githooks/* text eol=lf

@@ -322,6 +322,7 @@ necessarily hardware-specific. A cleaned-up example is committed here.
 | `docs/usb-driver-setup.md` | Windows driver setup (Zadig / WinUSB, NI-VISA) |
 | `rigol-mso5104-pyvisa-setup.md` | troubleshooting notes for a Rigol MSO5104 |
 | `AGENTS.md` | conventions for AI agents working in this repo |
+| `.githooks/prepare-commit-msg` | adds the AI co-author trailer — run `git config core.hooksPath .githooks` once |
 | `LICENSE` | MIT — covers the code, not the vendor references in `commands/` |
 | `requirements.txt` | `pyvisa` + `pyvisa-py` + `pyusb` + `libusb-package` |
 
@@ -354,6 +355,31 @@ MSO5104**; the SCPI reference in `commands/` covers the Rigol MSO5000 series.
 Other MSO5000/DS1000Z-family instruments should work, but the trigger modes in
 particular were measured on one instrument — see
 [`commands/trigger_reference.md`](commands/trigger_reference.md).
+
+## Commit conventions
+
+Commits carrying AI assistance record it as a trailer:
+
+```
+Co-authored-by: DeepSeek <noreply@deepseek.com>
+```
+
+`.githooks/prepare-commit-msg` writes that line automatically and leaves a
+message that already has it alone. Hooks are not cloned with a repository, so
+enable it once per clone:
+
+```powershell
+git config core.hooksPath .githooks
+```
+
+It is a hook rather than a `commit.template` because a template is ignored as
+soon as `git commit -m` is passed, and `-m` is how most commits are made.
+
+Worth knowing what the trailer does and does not buy: GitHub renders it in the
+commit view, but it only counts towards the repository's contributor list when
+the email belongs to a GitHub account — `noreply@deepseek.com` is a placeholder,
+not one. Read the trailer as transparent disclosure of how the code was written,
+not as a contributor credit.
 
 ## License
 

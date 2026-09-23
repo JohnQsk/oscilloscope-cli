@@ -1,0 +1,48 @@
+#!/bin/sh
+#
+# Add this project's AI co-author trailer to every commit message.
+#
+# Enable once per clone (hooks are not cloned with a repository):
+#
+#     git config core.hooksPath .githooks
+#
+# Git runs this hook even when the message arrives via `git commit -m`, which is
+# the reason it is a hook and not a `commit.template` -- a template is ignored
+# as soon as -m is passed, and -m is how most commits are made.
+#
+# The work is left to `git interpret-trailers`, which solves two problems that
+# hand-rolled shell does not:
+#
+#   * It is idempotent, so amending or re-committing cannot stack duplicates.
+#     `--if-exists` is pinned anyway, because a global `trailer.ifexists` set to
+#     plain "add" would otherwise turn that into a duplicate.
+#   * It joins an *existing* trailer block instead of starting a new paragraph.
+#     That is not cosmetic: GitHub reads only the last paragraph, so a blank
+#     line in front of our trailer would push someone else's `Co-authored-by:`
+#     out of it and silently drop their attribution.
+#
+# It also looks only at the trailer block, so a message that merely *mentions*
+# the trailer in its body -- this project's own history does -- is still
+# attributed.
+#
+# $1 is the path of the message file; $2 is the source (message, template,
+# merge, squash, commit) and $3 the commit SHA for amend and merge. Neither is
+# needed here.
+
+set -e
+
+trailer='Co-authored-by: DeepSeek <noreply@deepseek.com>'
+msg_file="$1"
+
+[ -f "$msg_file" ] || exit 0
+
+# Leave an empty message alone. Comment lines are git's instructions rather than
+# content, so they are dropped before the check -- and this guard matters: if an
+# aborted commit (an empty message) were given a trailer, git would accept it as
+# a real message.
+if ! grep -v '^#' "$msg_file" | grep -q '[^[:space:]]'; then
+    exit 0
+fi
+
+git interpret-trailers --in-place --if-exists=addIfDifferent \
+    --trailer "$trailer" "$msg_file"
