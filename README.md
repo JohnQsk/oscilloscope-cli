@@ -322,6 +322,7 @@ necessarily hardware-specific. A cleaned-up example is committed here.
 | `docs/usb-driver-setup.md` | Windows driver setup (Zadig / WinUSB, NI-VISA) |
 | `rigol-mso5104-pyvisa-setup.md` | troubleshooting notes for a Rigol MSO5104 |
 | `AGENTS.md` | conventions for AI agents working in this repo |
+| `LICENSE` | MIT — covers the code, not the vendor references in `commands/` |
 | `requirements.txt` | `pyvisa` + `pyvisa-py` + `pyusb` + `libusb-package` |
 
 ## Connection conventions
@@ -354,10 +355,18 @@ Other MSO5000/DS1000Z-family instruments should work, but the trigger modes in
 particular were measured on one instrument — see
 [`commands/trigger_reference.md`](commands/trigger_reference.md).
 
-## Notes on bundled vendor material
+## License
+
+[MIT](LICENSE) © 2026 JohnQsk — use it, modify it, ship it; keep the copyright
+notice.
+
+That grant covers the code in this repository. It does **not** cover the Rigol
+command references under `commands/`, which are vendor material:
+
+### Bundled vendor material
 
 `commands/Rigol_MSO5000_SCPI_Commands.txt` and
 `commands/Rigol_MSO5000_SCPI_Indexes.txt` are references extracted from Rigol's
 published MSO5000 programming documentation, included here for convenience. They
-remain the property of their respective owner and are not covered by any license
-granted by this repository.
+remain the property of their respective owner and are not covered by the MIT
+license granted above.
