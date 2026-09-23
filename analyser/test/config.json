@@ -1,0 +1,8 @@
+{
+    "sample_rate_hz": 100000,
+    "duration_s": 10,
+    "amplitude_v": 2.0,
+    "dc_offset_v": 0.0,
+    "omega_rad_s": 1000.0,
+    "output_path": "RigolDS1.csv"
+}
