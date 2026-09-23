@@ -1,165 +1,363 @@
+# oscilloscope-cli
 
-#
+A **headless** SCPI service for USB oscilloscopes.
 
-## how to use
+There is no GUI and no CLI client. One long-running process watches a JSON file,
+and *how* you change that file is how you drive the instrument — an editor, a
+shell script, a notebook, a test rig, another program. The scope never knows the
+file exists.
 
-```python
-python .\scope_server.py .\scope_config.json
+```
+            you                    scope_server.py              instrument
+   ┌──────────────────┐          ┌──────────────────┐          ┌────────────┐
+   │ scope_config.json│  watch   │ diff, apply,     │   SCPI   │            │
+   │  (state, yours)  │ ───────► │ verify, report   │ ───────► │ USB USBTMC │
+   │ scope_actions.json│ ◄────── │ reset to idle    │          │            │
+   │  (requests)      │          └──────────────────┘          └────────────┘
+   └──────────────────┘                    │
+                                           ▼
+                                    stdout is the UI
 ```
 
-then you can control the osci device by editing the json file.
+## Why a file instead of a command line
 
-The `settings` block is grouped into objects -- one per channel, plus
-`timebase` and `run`:
+- **No session state to lose.** The JSON file *is* the desired state. Stop the
+  server, edit, start it again — the scope is brought to whatever the file says.
+- **Any language, any tool.** Writing JSON is the whole API. No Python import, no
+  socket protocol, no SDK.
+- **Only changes travel.** The settings block is diffed against what was last
+  applied, so re-saving a file you barely touched sends one command, not twenty.
+- **Mistakes are reported, not sent.** Values are checked before they go out, and
+  settings that can be silently clamped are read back afterwards. A typo shows up
+  in the console instead of looking like it worked.
+- **The scope is never a dependency.** If the instrument is unplugged, the server
+  keeps watching and reconnects on its own once the file changes again.
+
+The console is the only interface, so it narrates everything: what it applied,
+what it read back, what it refused, and what it ignored.
+
+## Quick start
+
+```powershell
+pip install -r requirements.txt
+
+# 1. point the config at a connected scope (interactive picker)
+python set_resource.py
+
+# 2. start the service
+python scope_server.py
+```
+
+Then edit `scope_config.json` in any editor and save. The server notices within
+a fraction of a second and applies the change.
 
 ```json
 {
   "resource": "USB0::2391::6054::MY00000000::0::INSTR",
   "settings": {
     "channels": {
-      "1": {"scale": 20, "offset": 0, "probe": 10},
-      "2": {"scale": 2, "probe": 10, "display": true}
+      "2": {"display": true, "scale": 1, "probe": 10}
     },
-    "timebase": {"scale": 0.001},
-    "trigger": {"mode": "EDGE", "source": 2, "slope": "POS", "level": 2.4},
+    "timebase": {"scale": 1e-7},
+    "trigger": {"mode": "EDGE", "source": 2, "slope": "POS", "level": 2},
     "run": 1
   }
 }
 ```
 
-- **channel items**: `scale` (V/div), `offset` (V), `probe` (attenuation,
-  `10` means a 10:1 probe), `display` (`true`/`1` shows the channel,
-  `false`/`0` hides it)
-- **timebase items**: `scale` (s/div), `offset` (s)
-- **trigger**: `mode` plus that mode's parameters, see below
-- **run**: `1` to start acquisition, `0` to stop
+Stop with **Ctrl+C**.
 
-Only the values that changed are sent. Unknown sections and items are reported
-in the console rather than silently ignored.
+### Command line
 
-## trigger
+```powershell
+python scope_server.py                            # ./scope_config.json
+python scope_server.py D:\rig\keysight.json       # a different config
+python scope_server.py --requests other.json      # a different request panel
+```
 
-`mode` is **required** whenever trigger parameters are given, because the SCPI
-prefix depends on it (`:TRIGger:EDGE:LEVel` versus `:TRIGger:GLIT:LEVel`), and
-it is applied first whatever order the JSON uses. `source` is a channel number
-`1`-`4` and is written as `CHANnel2`.
+| argument | meaning |
+|---|---|
+| `config` | config file to watch (default `scope_config.json` beside the script) |
+| `--requests PATH` | request file (default `scope_actions.json` beside the config) |
 
-The modes and parameters below were **measured on the connected DSO-X 3024A** --
-this instrument has no bus-decode triggers, and its pulse-width mode is called
-`GLITch`, not `PULSe`. Anything unavailable is reported and not sent, because
-the instrument answers an unknown mode with `-224` and quietly keeps the old
-one, so a blind write would look like it worked. Full details, including the
-Rigol command set for comparison, are in `commands/trigger_reference.md`.
+### What you should see
+
+```
+Watching   C:\...\scope_config.json
+Requests   C:\...\scope_actions.json
+Connecting to USB0::2391::6054::MY00000000::0::INSTR ...
+Connected: AGILENT TECHNOLOGIES,DSO-X 3024A,MY00000000,02.38.2014110300
+Applying settings:
+  -> :CHANnel2:PROBe 10
+  -> :CHANnel2:DISPlay 1
+  -> :CHANnel2:SCALe 1
+  -> :TIMebase:SCALe 1e-07
+  -> :TRIGger:MODE EDGE
+  -> :TRIGger:EDGE:SOURce CHANnel2
+  -> :TRIGger:EDGE:SLOPe POS
+  -> :TRIGger:EDGE:LEVel 2
+  -> :RUN
+  ** capture_png -> captures/hit_20260923-174501.png (48213 bytes)
+```
+
+## The two files, and why they are separate
+
+| file | role | who writes it |
+|---|---|---|
+| `scope_config.json` | **state** — `resource` plus the `settings` you want | **you only** — the server never opens it for writing |
+| `scope_actions.json` | **requests** — a panel of one-shot actions | you change a value; the server puts the `0` back |
+
+`settings` is level-based: it describes what the instrument should look like, and
+the server diffs it, so an unchanged value sends nothing.
+
+Requests are edge-based: they are *events*, not state. Keeping them in a separate
+file means a stale editor buffer can only ever lose a request — never one of your
+settings. The config file is not opened for writing at all.
+
+## `scope_config.json` — state
+
+### `resource` (required)
+
+The VISA resource string of the instrument. **Required** — a config without it
+stops the server. Do not hand-write it: run `python set_resource.py`, which lists
+what is actually connected and writes the choice into the file. Serial numbers
+appear here, so this file shows your hardware — keep that in mind before
+publishing a fork.
+
+### `settings` (optional)
+
+Everything the server knows how to control lives under here. Four sections:
+
+#### `channels` — one object per channel, keyed `"1"`–`"4"`
+
+| item | unit | meaning |
+|---|---|---|
+| `scale` | V/div | vertical scale |
+| `offset` | V | vertical offset |
+| `probe` | ratio | probe attenuation; `10` means a 10:1 probe |
+| `display` | bool | `true`/`1` shows the channel, `false`/`0` hides it |
+
+`probe` is always written **before** the other items on its channel, because
+changing the attenuation makes the instrument rescale the vertical scale — a
+probe write landing after a scale write would silently undo it.
+
+`display` accepts booleans and numbers only. The strings `"ON"`/`"OFF"` are
+**rejected** rather than guessed at: `1 if "OFF" else 0` is `1`, so accepting
+`"OFF"` would switch the channel *on* while the file said off. You get a warning
+instead.
+
+#### `timebase`
+
+| item | unit | meaning |
+|---|---|---|
+| `scale` | s/div | horizontal scale |
+| `offset` | s | horizontal position |
+
+#### `trigger`
+
+`mode` is required as soon as any parameter is given: the SCPI prefix depends on
+it (`:TRIGger:EDGE:LEVel` versus `:TRIGger:GLIT:LEVel`), and the mode is applied
+first whatever order the JSON uses. `source` is a channel number `1`–`4` and is
+written as `CHANnel2`.
+
+```json
+{
+  "settings": {
+    "trigger": {"mode": "EDGE", "source": 2, "slope": "POS", "level": 2.4}
+  }
+}
+```
 
 | mode | parameters |
 |---|---|
 | `EDGE` | `source` `slope` `level` `coupling` |
-| `GLITch` | `source` `polarity` `qualifier` `level` |
-| `PATTern` | `qualifier` |
+| `GLIT` | `source` `polarity` `qualifier` `level` |
+| `PATT` | `qualifier` |
 | `RUNT` | `source` `polarity` `qualifier` `time` |
-| `TRANsition` | `source` `slope` `qualifier` `time` |
+| `TRAN` | `source` `slope` `qualifier` `time` |
 | `TV` | `source` `polarity` `mode` `standard` `line` |
-| `USB`, `DELay` | mode only; parameter names not identified |
-| `SHOLd` | `slope` |
+| `SHOL` | `slope` |
+| `USB`, `DEL` | mode only; parameter names not identified |
 
-Values are verified by readback, comparing SCPI mnemonics long or short, so a
-typo like `"slope": "RISING"` is reported rather than silently ignored.
+Only modes measured to exist on a real instrument are accepted. An unknown mode
+or parameter is **reported, not sent** — the scope answers an unknown mode with
+`-224` and quietly keeps the previous one, so a blind write would look like it
+succeeded. See [`commands/trigger_reference.md`](commands/trigger_reference.md)
+for what was measured, including the Rigol command set for comparison.
 
-## requests
+#### `run`
 
-There are **two files**, and the split is the point:
+`1` starts acquisition (`:RUN`), `0` stops it (`:STOP`).
 
-| file | role | who writes it |
+### Getting told about mistakes
+
+The server reports what it does not understand, with a pointer to where you are
+looking in the file:
+
+```
+  ! ignoring unknown top-level key 'trigger' (did you mean settings.trigger?)
+  ! ignoring unknown item 'channels.2.scal' (valid: scale, offset, probe, display)
+  ! bad value for 'channels.2.display': expected true/false or 1/0, got 'OFF'
+  ! trigger.mode: mode 'EGDE' is not available on this instrument (valid: DEL, EDGE, GLIT, PATT, RUNT, SHOL, TRAN, TV, USB)
+  ! channels.2.probe=0.01 not applied as asked (scope reports 1.000000E+01, wrote 0.01)
+```
+
+That last one is the readback check. Rules that follow from it:
+
+- **Only what changed is sent.** Values are diffed against the last apply, and
+  the whole settings block is re-applied when the server connects to a
+  *different* instrument.
+- **A rejected value is never retried in a loop.** A clamped write is reported
+  but still recorded as applied, so it is said once rather than on every poll.
+- **A JSON syntax error keeps the old state** and changes nothing on the scope.
+- **A bad file edit is not fatal.** Fix the JSON, save again, and the next poll
+  picks it up. The server never exits because of a malformed config.
+
+## `scope_actions.json` — requests
+
+Requests are events, so they live in their own file and are shaped as a **control
+panel**: every request the server knows sits in it at the idle value `0`. Replace
+a `0` with something real to ask for it, and the server edits the `0` back once
+it has acted.
+
+```json
+{
+  "single": 0,
+  "save_png": 0,
+  "capture_png": 0
+}
+```
+
+| request | what it does | needs a path |
 |---|---|---|
-| `scope_config.json` | state: `resource` + `settings` | **you only** -- the server never writes it |
-| `scope_actions.json` | a panel of one-shot requests | you change a value, the server puts it back to idle |
+| `single` | arms one acquisition and returns — the front-panel **Single** key | no |
+| `save_png` | saves the screen as it is right now | yes |
+| `capture_png` | arms one acquisition, waits for the trigger, then saves the screen | yes |
 
-`settings` is state: it is diffed against what was last applied, so an unchanged
-value sends nothing. Requests are one-shot side effects, and they run after the
-settings, so what you capture is the state you just asked for.
+Replace exactly one value at a time — the panel is already a complete, valid
+file, so a request is a one-character edit:
 
-`scope_actions.json` is a **control panel**. Every request the server knows sits
-in it at the idle value `0`:
+- `"single": 1` — arm one acquisition
+- `"save_png": "captures/shot_{timestamp}.png"` — grab the screen now
+- `"capture_png": {"path": "captures/hit_{timestamp}.png", "timeout_s": 5.0, "resume": false}`
 
-```json
-{"single": 0, "save_png": 0, "capture_png": 0}
-```
-
-Replace a `0` with something real to ask for it, and the server puts the `0`
-back once it has acted -- so the panel stays put, tells you what is available,
-and asking a second time is a one-character edit:
-
-```json
-{"single": 1, "save_png": 0, "capture_png": 0}
-```
-
-| request | what it does |
-|---|---|
-| `single` | arms one acquisition and returns -- the front-panel **Single** key |
-| `save_png` | saves the screen as it is right now |
-| `capture_png` | arms one acquisition, waits for the trigger, then saves the screen |
-
-Anything that spells "nothing" counts as idle: `0`, `false`, `null`, `""`. Any
-other value asks for the request, so `1`, `true` and `"go"` all work for
-`single`. If you delete a name it comes back on the next server start, so the
-panel is always complete.
+Anything that spells "nothing" is idle: `0`, `false`, `null`, `""`. Any other
+value asks for the request, so `1`, `true` and `"go"` all fire `single`.
 
 `save_png` and `capture_png` read the screen over VISA (`:DISPlay:DATA? PNG`) and
-write it straight to your PC, so no USB stick is needed. Relative paths resolve
-against the config file's folder, and missing folders are created. `single`
-writes nothing, so it takes no path. A path replaces the idle value:
+write it straight to disk, so no USB stick is involved. Relative paths resolve
+against the request file's folder, missing folders are created, and
+`{timestamp}` expands to `YYYYmmdd-HHMMSS`. There is no counter field to bump:
+the whole entry is reset, so the object form carries only real options.
 
-```json
-{"save_png": "captures/shot_{timestamp}.png"}
-```
+| option | default | meaning |
+|---|---|---|
+| `timeout_s` | `5` | how long `capture_png` waits for a trigger |
+| `resume` | `false` | `true` returns to continuous acquisition after saving; the default holds the captured frame, exactly like the Single key |
 
-`capture_png` uses the object form because it has options:
+An armed scope with no trigger waits **forever**, so the timeout matters: when it
+expires the request is reported as failed and **nothing is written**, rather than
+saving a stale screen and pretending it was the event.
 
-```json
-{"capture_png": {"path": "captures/hit_{timestamp}.png",
-                 "timeout_s": 5.0, "resume": false}}
-```
+### The sharp edge, and what protects you
 
-There is no counter field to bump: the server resets the whole entry, so the
-object carries only real options.
+The panel is a file you edit while the server writes it, so the rules are
+deliberately conservative:
 
-- **`timeout_s`** (default `5`) -- how long to wait for the trigger. An armed
-  scope with no trigger waits *forever*, so this matters: when it expires the
-  request is reported as failed and **nothing is written**, rather than saving a
-  stale screen and pretending it was the event.
-- **`resume`** (default `false`) -- leave the scope stopped on the captured
-  frame, exactly like the front-panel Single key. Set `true` to go back to
-  continuous acquisition after saving.
-
-It arms with `:SINGle` after a `*CLS`, then polls `:TER?` for the trigger.
-`commands/trigger_reference.md` explains why that combination: on this
-instrument `:TRIGger:SWEep SINGle` is rejected, `*OPC?` returns immediately
-without waiting, and reading `:TER?` clears it.
-
-### Why a separate file
-
-The server writes the request file, and a file that is both edited by you and
-written by the server is a hazard: your editor holds a stale copy, and saving it
-overwrites whatever the server last wrote. Keeping requests in their own file
-means the blast radius is a request -- never one of your settings. The config
-file is never opened for writing at all.
-
-That blast radius is worth spelling out, because the panel has one sharp edge:
-if your editor still shows `{"single": 1}` after the server has reset it to `0`,
-saving that buffer asks for `single` a second time and re-arms the scope. It
-cannot corrupt a setting, but it can do something you did not ask for. Let the
-editor reload the file after the server has handled it (most do, once the buffer
-has no unsaved edits), or keep the file closed while you are not editing it.
-
-Three consequences worth knowing:
-
-- **A request left non-idle when the server starts is reset, not run**, so a
-  request from an earlier session cannot act now. The console names them.
-- **Every request is attempted once and then reset to idle**, successful or not.
-  A failure is reported and does not linger, so it cannot fire later when an
+- Every request is attempted **once** and then reset to idle, successful or not.
+  A failure is reported and does not linger, so it cannot fire later when some
   unrelated edit happens to change the file.
-- **Only the value that was acted on is reset.** If you set `single` to `2` while
-  `1` is still being carried out, the `2` stays and fires on the next pass.
+- Only the value that was actually acted on is reset. Set `single` to `2` while
+  `1` is still being carried out and the `2` survives to the next pass.
+- The file is re-read before the reset, so a request you added while the last one
+  ran is not written away.
+- **A request left non-idle when the server starts is reset, not run** — nobody
+  is asking for it now — and the console names it.
+- Requests are dropped, with a message, when no instrument is connected.
+- Writes are atomic (temp file + `os.replace`), so the watcher never reads a
+  half-written file.
 
-Pass `--requests PATH` to keep the request file somewhere else.
+One consequence is worth spelling out: if your editor still shows
+`{"single": 1}` after the server has reset it to `0`, saving that buffer asks for
+`single` a second time and re-arms the scope. It cannot corrupt a setting, but it
+can do something you did not ask for. Most editors reload the file once the
+buffer has no unsaved edits; otherwise keep it closed while you are not editing.
 
+## Pointing at the right instrument
+
+`set_resource.py` is the only part of this repo that talks to hardware without
+the server running. It discovers instruments through the `@py` backend and writes
+the one you pick into the config.
+
+```powershell
+python set_resource.py                            # interactive picker
+python set_resource.py --list --identify          # show what is connected, exit
+python set_resource.py -c keysight.json           # a different config file
+python set_resource.py --match MY00000000         # skip the prompt
+python set_resource.py --vid 0x0957 --dry-run     # preview, write nothing
+```
+
+With no flags it shows a numbered list and prompts: **Enter** keeps the currently
+configured instrument (marked `<- current`), a number switches, `q` quits. In a
+non-interactive context it will not prompt — it auto-selects only when exactly one
+instrument is present, and otherwise exits non-zero telling you which flags to use.
+
+The write is atomic, so a running `scope_server.py` picks up the change on its
+next poll and reconnects by itself. Other keys in the config — your whole
+`settings` block — are preserved.
+
+Because the resource string carries the serial number, `scope_config.json` is
+necessarily hardware-specific. A cleaned-up example is committed here.
+
+## Repository layout
+
+| path | what it is |
+|---|---|
+| `scope_server.py` | the service: watches, diffs, applies, verifies, reports |
+| `set_resource.py` | pick a connected scope and store it in a config file |
+| `scope_config.json` | example state file |
+| `scope_actions.json` | the request panel |
+| `analyser/` | FFT / CSV analysis for waveform exports — see [`analyser/README.md`](analyser/README.md) |
+| `commands/` | MSO5000 SCPI reference and measured trigger notes |
+| `docs/usb-driver-setup.md` | Windows driver setup (Zadig / WinUSB, NI-VISA) |
+| `rigol-mso5104-pyvisa-setup.md` | troubleshooting notes for a Rigol MSO5104 |
+| `AGENTS.md` | conventions for AI agents working in this repo |
+| `requirements.txt` | `pyvisa` + `pyvisa-py` + `pyusb` + `libusb-package` |
+
+## Connection conventions
+
+- **`@py` backend only** — `pyvisa.ResourceManager("@py")`; no NI-VISA install
+  needed.
+- **USB (USBTMC)** is the tested path. Resource strings are discovered, never
+  hardcoded.
+- **Timeout** 5000 ms, **termination** `\n` in both directions.
+- On Windows the scope may need its driver replaced with WinUSB via Zadig —
+  see [`docs/usb-driver-setup.md`](docs/usb-driver-setup.md).
+- `D:/` in a SCPI path refers to the USB stick in the scope's **front panel**
+  (a USB *host* port). Use forward slashes. The scope must be stopped before
+  `:SAVE:CSV`.
+
+## Extending it
+
+Adding a control item means adding one method and naming it in the group's
+`ITEMS` — it then appears as a JSON key on every channel (or on the timebase) at
+once. The SCPI prefix lives only in the group instance, so no command string is
+hand-written and a control cannot be aimed at the wrong channel by a copy-paste
+slip. Add a `<item>_readback()` next to it when the instrument can silently
+clamp or reject a value. Adding a request means adding a handler to `REQUESTS`.
+
+## Compatibility
+
+Developed and verified against a **Keysight DSO-X 3024A** and a **Rigol
+MSO5104**; the SCPI reference in `commands/` covers the Rigol MSO5000 series.
+Other MSO5000/DS1000Z-family instruments should work, but the trigger modes in
+particular were measured on one instrument — see
+[`commands/trigger_reference.md`](commands/trigger_reference.md).
+
+## Notes on bundled vendor material
+
+`commands/Rigol_MSO5000_SCPI_Commands.txt` and
+`commands/Rigol_MSO5000_SCPI_Indexes.txt` are references extracted from Rigol's
+published MSO5000 programming documentation, included here for convenience. They
+remain the property of their respective owner and are not covered by any license
+granted by this repository.
