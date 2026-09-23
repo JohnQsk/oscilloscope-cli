@@ -375,23 +375,10 @@ git config core.hooksPath .githooks
 It is a hook rather than a `commit.template` because a template is ignored as
 soon as `git commit -m` is passed, and `-m` is how most commits are made.
 
-Worth knowing what the trailer does and does not buy: GitHub renders it in the
-commit view, but it only counts towards the repository's contributor list when
-the email belongs to a GitHub account — `noreply@deepseek.com` is a placeholder,
-not one. See [Credits](#credits).
-
 ## Credits
 
 **DeepSeek** wrote most of this repository, working as an AI coding agent under
 human direction — the requirements, the review and the final say are JohnQsk's.
-
-The commits record that, and GitHub does parse it: asking GitHub for the authors
-of the head commit returns two entries, `JohnQsk` and
-`DeepSeek <noreply@deepseek.com>`. What GitHub will not do is count it in the
-repository's contributor panel, because that panel lists *accounts* and
-`noreply@deepseek.com` belongs to none. The panel shows a single contributor,
-and that is an accurate reading of the data rather than something to work
-around. This section is the attribution that does not depend on it.
 
 ## License
 
